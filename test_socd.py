@@ -1,5 +1,5 @@
 """Run: python test_socd.py"""
-from socd import clean, scancode, INPUT, check_cfg, DEFAULTS, BUTTONS, autostart
+from socd import controller_kind, button_icon, LAYOUTS, clean, scancode, INPUT, check_cfg, DEFAULTS, BUTTONS, autostart
 import ctypes
 
 # single direction or nothing: every mode agrees
@@ -46,4 +46,15 @@ for change in bad:
     except ValueError:
         pass
 assert autostart() in (True, False)  # read-only; never touches the registry
+
+# controller family detection and its labels / icons
+assert controller_kind("PS5 Controller") == "playstation"
+assert controller_kind("Sony DualShock 4") == "playstation"
+assert controller_kind("Nintendo Switch Pro Controller") == "switch"
+assert controller_kind("Xbox 360 Controller") == "xbox"
+assert controller_kind("Generic USB Joystick") == "xbox" and controller_kind(None) == "xbox"
+for kind, (_, names, face, short) in LAYOUTS.items():
+    assert len(names) == len(BUTTONS) and len(face) == 4 and len(short) == len(BUTTONS) - 8
+    for b in range(len(BUTTONS)):
+        assert button_icon(kind, b).size == (24, 24)
 print("ok")

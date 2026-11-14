@@ -36,15 +36,21 @@ python socd.py
 
 ## Use
 
+![Settings window](docs/screenshot.png)
+
 It lives in the system tray; double-click the icon for settings (shown automatically on first run).
 
+- **Live input** — two fighting-game notation grids show what you hold and what the game receives,
+  so you can check a mode without opening a game.
 - **Controller** — "(first one found)" or a specific one. SOCD's own virtual pad is left out of the list.
-- Click a direction's button, then press the controller button to bind it (Esc cancels). LT and RT
-  can be bound too. Binding a button that another direction already uses swaps the two.
+- **Directions** — click a direction's button, then press the controller button to bind it (Esc
+  cancels). LT and RT can be bound too. Binding a button that another direction already uses swaps
+  the two.
+- The controller family (Xbox, PlayStation, Nintendo Switch) is detected from its name, and the
+  buttons are shown with that family's names and glyphs (A/B/X/Y, cross/circle/square/triangle, L1/ZL ...).
+  Unknown controllers, and PlayStation pads running through Steam Input or DS4Windows, show as Xbox.
 - **Pad directions go to** — d-pad, left stick (full tilt), or both.
 - **Keyboard key** — one character, or `up` `down` `left` `right` `space` `enter` `tab` `shift` `ctrl` `alt`.
-- **Pressed / Sent** at the bottom shows live what you hold and what the game receives — use it to
-  check a mode without opening a game.
 - In pad mode every other button, stick and trigger passes straight through, and rumble from the
   game is forwarded to the real controller.
 
@@ -65,6 +71,12 @@ defaults are used. If SDL doesn't recognise an obscure controller, drop a
 - Two identical controllers can't be told apart (matched by name).
 - Keyboard output can't reach a game running as administrator unless SOCD is also run as administrator.
 - Many games and tournaments restrict SOCD modes (e.g. last-input-priority); check the rules.
+
+## Design
+
+Dark theme with one accent colour, text contrast of at least 4.5:1, an 8 px spacing grid, visible
+keyboard focus, and state shown by shape or words as well as colour (filled vs outlined arrows,
+"RUNNING" next to the status dot). All icons are drawn by the program itself; no game artwork is used.
 
 ## Test
 
