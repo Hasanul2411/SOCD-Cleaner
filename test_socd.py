@@ -1,5 +1,5 @@
 """Run: python test_socd.py"""
-from socd import controller_kind, button_icon, LAYOUTS, clean, scancode, INPUT, check_cfg, DEFAULTS, BUTTONS, autostart
+from socd import Pair, THEMES, palette, contrast, controller_kind, button_icon, LAYOUTS, clean, scancode, INPUT, check_cfg, DEFAULTS, BUTTONS, autostart
 import ctypes
 
 # single direction or nothing: every mode agrees
@@ -30,9 +30,39 @@ except ValueError:
 assert scancode("space") == (0x39, 0)
 assert BUTTONS[21:] == ["LT", "RT"]
 
+# Pair: press order is tracked across updates
+p = Pair()
+assert p.update("last", True, False) == -1          # hold 1
+assert p.update("last", True, True) == 1            # add 2 -> 2 wins
+assert p.update("last", True, False) == -1          # release 2 -> 1 comes back
+p = Pair()
+p.update("last_nr", True, False)
+assert p.update("last_nr", True, True) == 1         # 2 wins
+assert p.update("last_nr", True, False) == 0        # release 2 -> 1 does NOT come back
+assert p.update("last_nr", False, False) == 0
+assert p.update("last_nr", True, False) == -1       # until it is pressed again
+p = Pair()
+p.update("first", True, False)
+assert p.update("first", True, True) == -1          # first pressed keeps winning
+assert Pair().update("neutral", True, True) == 0
+assert Pair().update("a", True, True) == -1         # button 1 always wins
+assert Pair().update("a", False, True) == 1
+
+# button pairs in the config
+pair = {"a": 0, "b": 1, "mode": "last", "key_a": "", "key_b": ""}
+check_cfg({**DEFAULTS, "pairs": [pair, {**pair, "a": 2, "b": 3, "mode": "a", "key_a": "j", "key_b": "k"}]})
+for wrong in ([{**pair, "b": 0}], [{**pair, "a": 11}], [{**pair, "mode": "up"}], [{**pair, "key_a": "w"}],
+              [{**pair, "a": 99}], [pair, pair], [{"a": 0}], ["x"], "x",
+              [{**pair, "a": i * 2, "b": i * 2 + 1} for i in range(9) if i * 2 not in (10, 12, 14)] + [{**pair, "a": 20, "b": 22}] * 3):
+    try:
+        check_cfg({**DEFAULTS, "pairs": wrong})
+        raise AssertionError(f"accepted pairs {wrong}")
+    except ValueError:
+        pass
+
 # config validation: defaults pass, anything that would crash the engine is rejected
 check_cfg(DEFAULTS)
-bad = [{"mode": "nope"}, {"output": 3}, {"enabled": "yes"}, {"controller": None},
+bad = [{"mode": "nope"}, {"theme": "nope"}, {"output": 3}, {"enabled": "yes"}, {"controller": None},
        {"bind": {"up": 99, "down": 12, "left": 13, "right": 14}},     # out of range
        {"bind": {"up": "A", "down": 12, "left": 13, "right": 14}},    # wrong type
        {"bind": {"up": 12, "down": 12, "left": 13, "right": 14}},     # duplicate button
@@ -57,4 +87,13 @@ for kind, (_, names, face, short) in LAYOUTS.items():
     assert len(names) == len(BUTTONS) and len(face) == 4 and len(short) == len(BUTTONS) - 8
     for b in range(len(BUTTONS)):
         assert button_icon(kind, b).size == (24, 24)
+
+# every theme must stay readable: text 4.5:1, graphics and controls 3:1 (WCAG AA)
+for name in THEMES:
+    p = palette(name)
+    for token, need in (("FG", 4.5), ("MUTED", 4.5), ("GOOD", 4.5), ("BAD", 4.5), ("ACCENT", 3), ("AMBER", 3)):
+        got = contrast(p[token], p["BG"])
+        assert got >= need, f"{name}: {token} on background is {got:.2f}, need {need}"
+    assert contrast(p["FG"], p["FIELD"]) >= 4.5, name
+    assert contrast(p["ON_ACCENT"], p["ACCENT"]) >= 4.5, f"{name}: text on accent button"
 print("ok")

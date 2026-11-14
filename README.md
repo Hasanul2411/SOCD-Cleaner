@@ -10,6 +10,7 @@ the game as either a virtual Xbox 360 pad or keyboard keys.
 | Mode | Left + Right | Up + Down |
 |---|---|---|
 | Last input priority | newest wins | newest wins |
+| Last input, no re-press | newest wins; the other stays off until pressed again | same |
 | First input priority | oldest wins | oldest wins |
 | Neutral | nothing | nothing |
 | Up priority | nothing | Up |
@@ -71,6 +72,34 @@ defaults are used. If SDL doesn't recognise an obscure controller, drop a
 - Two identical controllers can't be told apart (matched by name).
 - Keyboard output can't reach a game running as administrator unless SOCD is also run as administrator.
 - Many games and tournaments restrict SOCD modes (e.g. last-input-priority); check the rules.
+
+## Button pairs
+
+The **Button pairs** tab does for any two buttons what the direction modes do for opposites, like
+hitboxer's mappings. Add a pair, bind any two buttons (face buttons, shoulders, triggers, ...) and
+pick the rule for when both are held:
+
+| Rule | Both held |
+|---|---|
+| Last pressed wins | newest wins; releasing it brings the other back |
+| Last pressed wins, no re-press | newest wins; the other stays off until pressed again |
+| First pressed wins | oldest wins |
+| Both cancel out | neither is sent |
+| Button 1 always wins | Button 1 |
+
+Up to 8 pairs. A button can be in one pair or one direction only. With pad output the winner is
+sent as that same button; with keyboard output give each button a key (empty = send nothing).
+Paddles, touchpad and misc buttons have no Xbox 360 equivalent, so in a pair they only work with
+keyboard output.
+
+## Themes
+
+**Appearance → Theme** switches the look instantly, without interrupting the controller:
+Midnight (default), Daylight, Kazuya, Heihachi, Bryan, Fahkumram and Reina. The character themes are
+original colour palettes named after who inspired them; no game artwork is used. Every theme is
+checked by the tests for readable contrast.
+
+`socd.exe --show` opens the settings window at start instead of staying in the tray.
 
 ## Design
 

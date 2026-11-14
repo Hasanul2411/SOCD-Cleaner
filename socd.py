@@ -21,8 +21,12 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 DIRS = ("up", "down", "left", "right")
 ARROW = {"up": "↑", "down": "↓", "left": "←", "right": "→"}
-MODES = {"last": "Last input priority", "first": "First input priority",
-         "neutral": "Neutral", "up": "Up priority"}
+MODES = {"last": "Last input priority", "last_nr": "Last input, no re-press",
+         "first": "First input priority", "neutral": "Neutral", "up": "Up priority"}
+# Rules for a free pair of buttons (hitboxer's OPPOSITE / OPPOSITE-no-repress / NEUTRAL, plus two more).
+PAIR_MODES = {"last": "Last pressed wins", "last_nr": "Last pressed wins, no re-press",
+              "first": "First pressed wins", "neutral": "Both cancel out", "a": "Button 1 always wins"}
+MAX_PAIRS = 8
 OUTPUTS = {"pad": "Virtual Xbox pad", "keyboard": "Keyboard keys"}
 TARGETS = {"dpad": "D-pad", "stick": "Left stick", "both": "D-pad + left stick"}
 
@@ -35,9 +39,10 @@ NSDL, LT, RT = 21, 21, 22
 XBITS = [0x1000, 0x2000, 0x4000, 0x8000, 0x0020, 0x0400, 0x0010, 0x0040, 0x0080,
          0x0100, 0x0200, 0x0001, 0x0002, 0x0004, 0x0008]
 
-DEFAULTS = {"controller": "", "mode": "last", "output": "pad", "pad_target": "dpad", "enabled": True,
+DEFAULTS = {"controller": "", "mode": "last", "output": "pad", "pad_target": "dpad", "enabled": True, "theme": "Midnight",
             "bind": {"up": 11, "down": 12, "left": 13, "right": 14},
-            "keys": {"up": "w", "down": "s", "left": "a", "right": "d"}}
+            "keys": {"up": "w", "down": "s", "left": "a", "right": "d"},
+            "pairs": []}  # each: {"a": button, "b": button, "mode": PAIR_MODES key, "key_a": "", "key_b": ""}
 
 
 def clean(mode, neg, pos, last, vertical=False):
@@ -49,9 +54,35 @@ def clean(mode, neg, pos, last, vertical=False):
         return last
     if mode == "first":
         return -last
-    if mode == "up" and vertical:
+    if mode == "a" or (mode == "up" and vertical):
         return -1
     return 0  # neutral, and the horizontal axis of "up"
+
+
+class Pair:
+    """Two opposing inputs. Remembers what clean() cannot: which side was pressed last,
+    and for "last_nr" which side lost and must be pressed again before it counts."""
+
+    def __init__(self):
+        self.a = self.b = False
+        self.last = 1
+        self.blocked = 0
+
+    def update(self, mode, a, b, vertical=False):
+        if a and not self.a:
+            self.last = -1
+        if b and not self.b:
+            self.last = 1
+        self.a, self.b = a, b
+        if mode != "last_nr":
+            self.blocked = 0
+            return clean(mode, a, b, self.last, vertical)
+        if a and b:
+            self.blocked = -self.last  # the loser stays off until released and pressed again
+        elif not (a if self.blocked < 0 else b):
+            self.blocked = 0
+        v = clean("last", a, b, self.last)
+        return 0 if v == self.blocked else v
 
 
 # --- keyboard output (scancodes, because games ignore virtual-key-only input) ---
@@ -95,22 +126,27 @@ def send_key(name, down):
 
 def check_cfg(cfg):
     """Raise ValueError if cfg would break the engine (hand-edited or corrupt file, bad UI input)."""
+    def button(v):
+        return type(v) is int and 0 <= v < len(BUTTONS)
     try:
+        pairs = cfg["pairs"]
         ok = (cfg["mode"] in MODES and cfg["output"] in OUTPUTS and cfg["pad_target"] in TARGETS
               and isinstance(cfg["controller"], str) and isinstance(cfg["enabled"], bool)
-              and all(type(cfg["bind"][d]) is int and 0 <= cfg["bind"][d] < len(BUTTONS) for d in DIRS))
-        keys = [cfg["keys"][d] for d in DIRS]
+              and cfg["theme"] in THEMES and all(button(cfg["bind"][d]) for d in DIRS)
+              and isinstance(pairs, list) and len(pairs) <= MAX_PAIRS
+              and all(button(p["a"]) and button(p["b"]) and p["mode"] in PAIR_MODES
+                      and isinstance(p["key_a"], str) and isinstance(p["key_b"], str) for p in pairs))
+        keys = [cfg["keys"][d] for d in DIRS] + [k for p in pairs for k in (p["key_a"], p["key_b"]) if k]
+        buttons = [cfg["bind"][d] for d in DIRS] + [v for p in pairs for v in (p["a"], p["b"])]
     except (KeyError, TypeError):
         ok = False
-    if not ok:
+    if not ok or not all(isinstance(k, str) for k in keys):
         raise ValueError("Settings are invalid")
-    for k in keys:
-        if not isinstance(k, str):
-            raise ValueError("Settings are invalid")
-        scancode(k)
-    # compare scancodes, not names, so "W" and "w" count as the same key
-    if len({cfg["bind"][d] for d in DIRS}) < 4 or len({scancode(k) for k in keys}) < 4:
-        raise ValueError("Each direction needs its own button and its own key")
+    codes = [scancode(k) for k in keys]  # scancodes, not names, so "W" and "w" count as the same key
+    if len(set(buttons)) < len(buttons):
+        raise ValueError("A controller button is used twice")
+    if len(set(codes)) < len(codes):
+        raise ValueError("A keyboard key is used twice")
 
 
 def load_cfg():
@@ -120,6 +156,8 @@ def load_cfg():
         for k in cfg:
             if k in saved:
                 cfg[k] = {**cfg[k], **saved[k]} if isinstance(cfg[k], dict) else saved[k]
+        if cfg["theme"] not in THEMES:  # theme removed in an update: keep the rest of the settings
+            cfg["theme"] = DEFAULTS["theme"]
         check_cfg(cfg)
     except (OSError, ValueError, TypeError):
         return json.loads(json.dumps(DEFAULTS))  # missing or corrupt config: start from defaults
@@ -184,9 +222,8 @@ class Engine(threading.Thread):
             return
 
         ctl = pad = sent = None
-        keys = dict.fromkeys(DIRS)  # dir -> key name currently held down
-        held = dict.fromkeys(DIRS, False)
-        last = {"x": 1, "y": 1}
+        keys = {}  # output slot (direction name or pair index) -> key name currently held down
+        ax, ay, duos, seen = Pair(), Pair(), [], None
         prev = [0] * len(BUTTONS)
         next_scan = 0
         before = None        # controller names seen just before our virtual pad was plugged in
@@ -273,37 +310,48 @@ class Engine(threading.Thread):
                             self.pressed = b
                     prev = btn
 
-                    bind = cfg["bind"]
-                    for d in DIRS:
-                        h = bool(btn[bind[d]])
-                        if h and not held[d]:
-                            last["y" if d in ("up", "down") else "x"] = -1 if d in ("up", "left") else 1
-                        held[d] = h
-                    on = cfg["enabled"]
-                    x = clean(cfg["mode"], held["left"], held["right"], last["x"]) if on else 0
-                    y = clean(cfg["mode"], held["up"], held["down"], last["y"], vertical=True) if on else 0
-                    self.view = (tuple(d for d in DIRS if held[d]), x, y)
+                    if cfg is not seen:  # settings changed: fresh state for the button pairs
+                        seen, duos = cfg, [Pair() for _ in cfg["pairs"]]
+                    bind, on = cfg["bind"], cfg["enabled"]
+                    x = ax.update(cfg["mode"], bool(btn[bind["left"]]), bool(btn[bind["right"]]))
+                    y = ay.update(cfg["mode"], bool(btn[bind["up"]]), bool(btn[bind["down"]]), vertical=True)
+                    duo = [p.update(c["mode"], bool(btn[c["a"]]), bool(btn[c["b"]])) for p, c in zip(duos, cfg["pairs"])]
+                    if not on:
+                        x = y = 0
+                    self.view = (tuple(d for d in DIRS if btn[bind[d]]), x, y)
 
                     if cfg["output"] == "keyboard":
-                        active = {"up": y < 0, "down": y > 0, "left": x < 0, "right": x > 0}
-                        for d in DIRS:
-                            if keys[d] and (not active[d] or keys[d] != cfg["keys"][d]):
-                                send_key(keys[d], False)  # released, or the key was rebound while held
-                                keys[d] = None
-                            if active[d] and not keys[d]:
-                                keys[d] = cfg["keys"][d]
-                                send_key(keys[d], True)
+                        want = {d: cfg["keys"][d] for d, act in zip(DIRS, (y < 0, y > 0, x < 0, x > 0)) if act}
+                        if on:
+                            for i, (c, v) in enumerate(zip(cfg["pairs"], duo)):
+                                k = c["key_a"] if v < 0 else c["key_b"] if v > 0 else ""
+                                if k:
+                                    want[i] = k
+                        for slot in set(keys) | set(want):
+                            if keys.get(slot) and keys[slot] != want.get(slot):
+                                send_key(keys[slot], False)  # released, lost its pair, or was rebound while held
+                                keys[slot] = None
+                            if want.get(slot) and not keys.get(slot):
+                                keys[slot] = want[slot]
+                                send_key(keys[slot], True)
                     elif pad:
-                        # Everything except the bound direction buttons passes straight through.
-                        # When disabled nothing is consumed: the virtual pad mirrors the real one.
-                        bound = set(bind.values()) if on else set()
-                        mask = sum(XBITS[b] for b in range(len(XBITS)) if btn[b] and b not in bound)
+                        # Buttons bound as directions or pairs are swallowed and re-sent cleaned; everything
+                        # else passes straight through. When disabled the virtual pad mirrors the real one.
+                        # shortcut: paired paddles / touchpad / misc have no Xbox 360 button, so they only work with keyboard output
+                        bound, emit = (set(bind.values()) if on else set()), set()
+                        if on:
+                            for c, v in zip(cfg["pairs"], duo):
+                                bound |= {c["a"], c["b"]}
+                                if v:
+                                    emit.add(c["a"] if v < 0 else c["b"])
+                        mask = sum(XBITS[b] for b in range(len(XBITS)) if (btn[b] and b not in bound) or b in emit)
                         lx, ly = ctl.get_axis(0), min(32767, -ctl.get_axis(1))  # SDL Y is down-positive
                         if cfg["pad_target"] in ("dpad", "both"):
                             mask |= (y < 0) * 1 | (y > 0) * 2 | (x < 0) * 4 | (x > 0) * 8
                         if cfg["pad_target"] in ("stick", "both") and (x or y):
                             lx, ly = x * 32767, -y * 32767
-                        rep = (mask, 0 if LT in bound else max(0, lt) >> 7, 0 if RT in bound else max(0, rt) >> 7,
+                        rep = (mask, max(0, lt) >> 7 if LT not in bound or LT in emit else 0,
+                               max(0, rt) >> 7 if RT not in bound or RT in emit else 0,
                                lx, ly, ctl.get_axis(2), min(32767, -ctl.get_axis(3)))
                         if rep != sent:
                             r = pad.report
@@ -329,10 +377,57 @@ class Engine(threading.Thread):
 
 # --- tray icon + settings window ---
 
-# Design tokens. Dark, one accent; every text/background pair is at least 4.5:1.
-BG, FIELD, BORDER = "#14141c", "#20202c", "#3a3a52"
-FG, MUTED, OFF = "#e8e8f0", "#a0a3b5", "#262634"
-ACCENT, AMBER, GOOD, BAD = "#ff3b4e", "#ffc233", "#3ddc84", "#ff7b7b"
+# Themes: (background, text, accent, second highlight). Original palettes; the character ones
+# are only named after who inspired them. Every other colour is derived, and test_socd.py
+# checks contrast for each theme.
+THEMES = {
+    "Midnight": ("#14141c", "#e8e8f0", "#ff3b4e", "#ffc233"),
+    "Daylight": ("#f4f5f8", "#1a1b22", "#c81e3a", "#a85f00"),
+    "Kazuya": ("#0b0a10", "#efeaf7", "#8a5cff", "#ff3030"),      # devil violet, red eye
+    "Heihachi": ("#14100a", "#f7efe0", "#f2a100", "#ff5a2a"),    # tiger gold on black
+    "Bryan": ("#111410", "#eef0e6", "#c4d600", "#ff5a3c"),       # acid green, gunmetal
+    "Fahkumram": ("#1a0c08", "#fbeedd", "#f03a1e", "#f0b429"),   # red and gold ink
+    "Reina": ("#140a1e", "#f8eefc", "#ff4fd8", "#9fd8ff"),       # magenta lightning
+}
+BADGE, BADGE_FG = "#0c0c12", "#e8e8f0"  # button glyphs sit on a dark badge in every theme
+
+
+def _rgb(h):
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def mix(a, b, t):
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(_rgb(a), _rgb(b)))
+
+
+def luminance(h):
+    c = [v / 255 for v in _rgb(h)]
+    c = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4 for v in c]
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+
+def contrast(a, b):
+    lo, hi = sorted((luminance(a), luminance(b)))
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def palette(name):
+    bg, fg, accent, second = THEMES[name]
+    dark = luminance(bg) < 0.4
+    return dict(
+        BG=bg, FG=fg, ACCENT=accent, AMBER=second, DARK=dark,
+        FIELD=mix(bg, fg, 0.07), OFF=mix(bg, fg, 0.10), HOVER=mix(bg, fg, 0.14),
+        BORDER=mix(bg, fg, 0.24), DIM=mix(bg, fg, 0.42), MUTED=mix(bg, fg, 0.68),
+        ON_ACCENT=max(("#000000", "#ffffff"), key=lambda c: contrast(c, accent)),
+        ACCENT_HOVER=mix(accent, fg, 0.2), ACCENT_DOWN=mix(accent, bg, 0.25),
+        GOOD="#3ddc84" if dark else "#0b5e2c", BAD="#ff7b7b" if dark else "#a3161f")
+
+
+def apply_theme(name):
+    globals().update(palette(name))  # colours are module globals, read when widgets are (re)built
+
+
+apply_theme("Midnight")
 FONT, FONT_BOLD, FONT_TITLE, FONT_SMALL = (("Segoe UI", 10), ("Segoe UI Semibold", 10),
                                            ("Segoe UI Semibold", 15), ("Segoe UI", 9))
 GAP = 8  # spacing unit; all padding is a multiple of it
@@ -357,7 +452,7 @@ LAYOUTS = {
     "switch": ("Nintendo Switch",
                ["A", "B", "X", "Y", "Minus", "Home", "Plus", "L stick", "R stick", "L", "R"]
                + _DPAD + ["Capture"] + _PADDLES + ["ZL", "ZR"],
-               [("A", FG), ("B", FG), ("X", FG), ("Y", FG)],
+               [("A", BADGE_FG), ("B", BADGE_FG), ("X", BADGE_FG), ("Y", BADGE_FG)],
                ["-", "H", "+", "LS", "RS", "L", "R", "C", "P1", "P2", "P3", "P4", "TP", "ZL", "ZR"]),
 }
 
@@ -392,7 +487,7 @@ def button_icon(kind, b, size=24):
     _, _, face, short = LAYOUTS[kind]
     if b < 4:
         glyph, col = face[b]
-        d.ellipse((k, k, n - k, n - k), fill="#0c0c12", outline=col, width=int(1.5 * k))
+        d.ellipse((k, k, n - k, n - k), fill=BADGE, outline=col, width=int(1.5 * k))
         lo, hi, wd = n * 0.33, n * 0.67, int(2.2 * k)
         if glyph == "cross":
             d.line((lo, lo, hi, hi), fill=col, width=wd)
@@ -415,8 +510,8 @@ def button_icon(kind, b, size=24):
         d.rectangle((cx - a / 2, cy - a / 2, cx + a / 2, cy + a / 2), fill=AMBER)
     else:
         label = short[b - 4 if b < 11 else b - 8]
-        d.rounded_rectangle((k / 2, n * 0.2, n - k / 2, n * 0.8), radius=3 * k, fill="#0c0c12", outline=MUTED, width=k)
-        text(label, FG, n * (0.42 if len(label) < 3 else 0.34))
+        d.rounded_rectangle((k / 2, n * 0.2, n - k / 2, n * 0.8), radius=3 * k, fill=BADGE, outline=MUTED, width=k)
+        text(label, BADGE_FG, n * (0.42 if len(label) < 3 else 0.34))
     return img.resize((size, size), Image.LANCZOS)
 
 
@@ -429,7 +524,7 @@ def check_icon(checked, size=18):
     d.rounded_rectangle((k, k, n - k, n - k), radius=3 * k, fill=ACCENT if checked else FIELD,
                         outline=ACCENT if checked else MUTED, width=k)
     if checked:
-        d.line([(n * 0.26, n * 0.52), (n * 0.44, n * 0.70), (n * 0.76, n * 0.32)], fill="#000000",
+        d.line([(n * 0.26, n * 0.52), (n * 0.44, n * 0.70), (n * 0.76, n * 0.32)], fill=ON_ACCENT,
                width=int(2.4 * k), joint="curve")
     return img.resize((size, size), Image.LANCZOS)
 
@@ -453,16 +548,60 @@ def main():
     except (OSError, AttributeError):
         pass
 
+    import pystray
+
+    eng = Engine(load_cfg())
+    show = not CFG_PATH.exists() or "--show" in sys.argv  # first run, or asked for
+    eng.start()
+    apply_theme(eng.cfg["theme"])
+
+    ui_q = queue.SimpleQueue()  # tray callbacks run on another thread; tkinter must not be touched from there
+
+    def mode_item(k):
+        return pystray.MenuItem(MODES[k], lambda: ui_q.put(("mode", k)),
+                                checked=lambda item: eng.cfg["mode"] == k, radio=True)
+
+    icon = pystray.Icon("socd", tray_image(), "SOCD Cleaner", menu=pystray.Menu(
+        pystray.MenuItem("Settings", lambda: ui_q.put(("show", None)), default=True),
+        pystray.MenuItem("Cleaning enabled", lambda: ui_q.put(("toggle", None)),
+                         checked=lambda item: eng.cfg["enabled"]),
+        pystray.MenuItem("SOCD mode", pystray.Menu(*[mode_item(k) for k in MODES])),
+        pystray.MenuItem("Start with Windows", lambda: ui_q.put(("autostart", None)),
+                         checked=lambda item: autostart()),
+        pystray.MenuItem("Quit", lambda: ui_q.put(("quit", None)))))
+    icon.run_detached()
+
+    # The window is rebuilt from scratch on a theme change; the engine and virtual pad keep running.
+    pos = None
+    while True:
+        pos = settings_window(eng, icon, ui_q, show, pos)
+        if pos is None:
+            break
+        show = True
+    icon.stop()
+    eng.running = False
+    eng.join(1)
+
+
+def tray_image():
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (64, 64), BG)
+    draw = ImageDraw.Draw(img)
+    for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+        draw.polygon(arrow_points(32 + dx * 17, 32 + dy * 17, dx, dy, 26), fill=ACCENT)
+    return img
+
+
+def settings_window(eng, icon, ui_q, show, pos):
+    """Build and run the settings window. Returns None to quit, or the window position
+    when it closed itself to be rebuilt in a new theme."""
     import tkinter as tk
     from tkinter import ttk
-    import pystray
-    from PIL import Image, ImageDraw
 
-    first_run = not CFG_PATH.exists()
-    eng = Engine(load_cfg())
-    eng.start()
-
+    rebuild_at = [None]
     root = tk.Tk()
+    if pos:
+        root.geometry(pos)
     root.title("SOCD Cleaner")
     root.resizable(False, False)
     root.configure(bg=BG)
@@ -477,26 +616,38 @@ def main():
     st.configure("TLabelframe", bordercolor=BORDER, padding=GAP * 1.5)
     st.configure("TLabelframe.Label", foreground=MUTED, font=FONT_BOLD)
     st.configure("TButton", background=FIELD, padding=(GAP, GAP // 2 + 1), lightcolor=FIELD, darkcolor=FIELD)
-    st.map("TButton", background=[("pressed", BORDER), ("active", "#2c2c3c")],
+    st.map("TButton", background=[("pressed", BORDER), ("active", HOVER)],
            bordercolor=[("focus", AMBER)])
-    st.configure("Accent.TButton", background=ACCENT, foreground="#000000", font=FONT_BOLD,
+    st.configure("Accent.TButton", background=ACCENT, foreground=ON_ACCENT, font=FONT_BOLD,
                  padding=(GAP * 2, GAP - 1), lightcolor=ACCENT, darkcolor=ACCENT, bordercolor=ACCENT)
-    st.map("Accent.TButton", background=[("pressed", "#c92a3a"), ("active", "#ff6170")])
+    st.map("Accent.TButton", background=[("pressed", ACCENT_DOWN), ("active", ACCENT_HOVER)])
     st.configure("TCombobox", fieldbackground=FIELD, background=FIELD, foreground=FG, arrowcolor=FG,
                  padding=GAP // 2)
     st.map("TCombobox", fieldbackground=[("disabled", BG), ("readonly", FIELD)],
-           foreground=[("disabled", BORDER), ("readonly", FG)],
+           foreground=[("disabled", DIM), ("readonly", FG)],
            selectbackground=[("readonly", FIELD)], selectforeground=[("readonly", FG)],
            bordercolor=[("focus", AMBER)], arrowcolor=[("disabled", BORDER)])
     st.configure("TEntry", fieldbackground=FIELD, foreground=FG, insertcolor=FG, padding=GAP // 2)
-    st.map("TEntry", fieldbackground=[("disabled", BG)], foreground=[("disabled", "#6b6e80")],
+    st.map("TEntry", fieldbackground=[("disabled", BG)], foreground=[("disabled", DIM)],
            bordercolor=[("focus", AMBER)])
     for opt, val in (("background", FIELD), ("foreground", FG), ("selectBackground", ACCENT),
-                     ("selectForeground", "#000000")):
+                     ("selectForeground", ON_ACCENT)):
         root.option_add(f"*TCombobox*Listbox.{opt}", val)
+
+    st.configure("TNotebook", background=BG, bordercolor=BORDER, tabmargins=(0, 0, 0, 0))
+    st.configure("TNotebook.Tab", background=BG, foreground=MUTED, font=FONT_BOLD, padding=(GAP * 2, GAP - 2),
+                 bordercolor=BORDER)
+    st.map("TNotebook.Tab", background=[("selected", FIELD)], foreground=[("selected", FG)],
+           expand=[("selected", (0, 0, 0, 0))])
 
     frm = ttk.Frame(root, padding=GAP * 2)
     frm.grid()
+    nb = ttk.Notebook(frm)
+    nb.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(GAP, 0))
+    tab1 = ttk.Frame(nb, padding=(GAP * 2, GAP, GAP * 2, GAP * 2))
+    tab2 = ttk.Frame(nb, padding=GAP * 2)
+    nb.add(tab1, text="Controller")
+    nb.add(tab2, text="Button pairs")
 
     cfg = eng.cfg
     bind = dict(cfg["bind"])
@@ -505,9 +656,9 @@ def main():
     def key_of(names, shown):
         return next(k for k, v in names.items() if v == shown)
 
-    def card(col, row, title):
-        box = ttk.Labelframe(frm, text=title.upper())
-        box.grid(row=row, column=col, sticky="new", pady=(GAP, 0), padx=(GAP * 2 if col else 0, 0))
+    def card(col, row, title, span=1):
+        box = ttk.Labelframe(tab1, text=title.upper())
+        box.grid(row=row, column=col, rowspan=span, sticky="new", pady=(GAP, 0), padx=(GAP * 2 if col else 0, 0))
         box.columnconfigure(1, weight=1)
         return box
 
@@ -577,6 +728,11 @@ def main():
                    highlightthickness=1, highlightbackground=BG, highlightcolor=AMBER).grid(
         row=1, column=0, columnspan=2, sticky="w", pady=(GAP // 2, 0))
 
+    look = card(0, 3, "Appearance")
+    theme_var, theme_box = combo(look, 0, "Theme", {t: t for t in THEMES}, cfg["theme"])
+    theme_box.configure(height=12)
+    theme_box.bind("<<ComboboxSelected>>", lambda e: save())  # themes apply as soon as they are picked
+
     dev = card(1, 1, "Device")
     ANY = "(first one found)"
     ttk.Label(dev, text="Controller").grid(row=0, column=0, sticky="w", pady=GAP // 2, padx=(0, GAP * 2))
@@ -587,7 +743,7 @@ def main():
     out_var, out_box = combo(dev, 1, "Output", OUTPUTS, cfg["output"])
     tgt_var, tgt_box = combo(dev, 2, "Pad directions go to", TARGETS, cfg["pad_target"])
 
-    binds = card(1, 2, "Directions")
+    binds = card(1, 2, "Directions", span=2)
     ttk.Label(binds, text="Controller button", style="Muted.TLabel").grid(row=0, column=1)
     ttk.Label(binds, text="Keyboard key", style="Muted.TLabel").grid(row=0, column=2)
     bind_btns, key_vars, key_entries = {}, {}, []
@@ -639,14 +795,83 @@ def main():
     out_var.trace_add("write", grey_out)
     grey_out()
 
+    # button pairs: any two buttons, one rule (hitboxer-style mappings)
+    duo_card = ttk.Frame(tab2)
+    duo_card.grid(row=0, column=0, sticky="nw")
+    ttk.Label(duo_card, text="Pick any two buttons and a rule for when both are held - face buttons, shoulders, "
+              "triggers, anything. Keys are only used with keyboard output and may be left empty.",
+              style="Muted.TLabel", wraplength=690, justify="left").grid(row=0, column=0, sticky="w")
+    duo_grid = ttk.Frame(duo_card)
+    duo_grid.grid(row=1, column=0, sticky="w", pady=(GAP // 2, 0))
+    heads = [ttk.Label(duo_grid, text=t, style="Muted.TLabel") for t in ("Button 1", "", "Button 2", "Rule", "Key 1", "Key 2")]
+    for col, h in enumerate(heads):
+        h.grid(row=0, column=col, sticky="w")
+    pair_rows, next_id = [], [0]
+
+    def refresh_pairs():
+        for h in heads:
+            h.grid() if pair_rows else h.grid_remove()
+        nb.tab(tab2, text=f"Button pairs ({len(pair_rows)})" if pair_rows else "Button pairs")
+        add_btn.configure(state="normal" if len(pair_rows) < MAX_PAIRS else "disabled",
+                          text="+ Add pair" if len(pair_rows) < MAX_PAIRS else f"Maximum of {MAX_PAIRS} pairs")
+        grey_out()
+
+    def add_pair(p=None):
+        if len(pair_rows) >= MAX_PAIRS:
+            return
+        if p is None:  # new pair starts on the first two buttons nothing else uses
+            free = [v for v in range(len(BUTTONS)) if v not in bind.values()]
+            p = {"a": free[0], "b": free[1], "mode": "last", "key_a": "", "key_b": ""}
+        pid = next_id[0]
+        next_id[0] += 1
+        rec = {"id": pid, "mode": tk.StringVar(value=PAIR_MODES[p["mode"]]), "widgets": [], "entries": [],
+               "key_a": tk.StringVar(value=p["key_a"]), "key_b": tk.StringVar(value=p["key_b"])}
+
+        def put(widget, col, **kw):
+            widget.grid(row=pid + 1, column=col, padx=(0, GAP), pady=GAP // 4, **kw)
+            rec["widgets"].append(widget)
+            return widget
+
+        for col, side in ((0, "a"), (2, "b")):
+            slot = (pid, side)
+            bind[slot] = p[side]
+            bind_btns[slot] = put(ttk.Button(duo_grid, width=16, command=lambda s=slot: start_capture(s)), col)
+            label_bind(slot)
+        put(ttk.Label(duo_grid, text="vs", style="Muted.TLabel"), 1)
+        put(ttk.Combobox(duo_grid, textvariable=rec["mode"], values=list(PAIR_MODES.values()),
+                         state="readonly", width=28), 3)
+        for col, side in ((4, "a"), (5, "b")):
+            rec["entries"].append(put(ttk.Entry(duo_grid, textvariable=rec["key_" + side], width=7, justify="center"), col))
+        key_entries.extend(rec["entries"])
+        put(ttk.Button(duo_grid, text="Remove", command=lambda: remove_pair(rec)), 6)
+        pair_rows.append(rec)
+        refresh_pairs()
+
+    def remove_pair(rec):
+        stop_capture()
+        for side in "ab":
+            del bind[rec["id"], side], bind_btns[rec["id"], side]
+        for e in rec["entries"]:
+            key_entries.remove(e)
+        for wdg in rec["widgets"]:
+            wdg.destroy()
+        pair_rows.remove(rec)
+        refresh_pairs()
+
+    add_btn = ttk.Button(duo_card, text="+ Add pair", command=add_pair)
+    add_btn.grid(row=2, column=0, sticky="w", pady=(GAP // 2, 0))
+    for p in cfg["pairs"]:
+        add_pair(p)
+    refresh_pairs()
+
     # footer: result of the last save sits right next to the button that caused it
     foot = ttk.Frame(frm)
-    foot.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(GAP * 1.5, 0))
+    foot.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(GAP * 1.5, 0))
     foot.columnconfigure(0, weight=1)
     note = ttk.Label(foot, text="", wraplength=520)
     note.grid(row=0, column=0, sticky="w")
     status = ttk.Label(frm, text="", style="Muted.TLabel", wraplength=700)
-    status.grid(row=4, column=0, columnspan=2, sticky="w", pady=(GAP, 0))
+    status.grid(row=6, column=0, columnspan=2, sticky="w", pady=(GAP, 0))
 
     def say(text, ok=True):
         note.configure(text=text, foreground=GOOD if ok else BAD)
@@ -675,10 +900,22 @@ def main():
 
     def save():
         stop_capture()
-        commit({"controller": "" if ctl_var.get() == ANY else ctl_var.get(),
+        was = eng.cfg["theme"]
+        ok = commit({"theme": theme_var.get(), "controller": "" if ctl_var.get() == ANY else ctl_var.get(),
                 "mode": key_of(MODES, mode_var.get()), "output": key_of(OUTPUTS, out_var.get()),
-                "pad_target": key_of(TARGETS, tgt_var.get()), "enabled": on_var.get(), "bind": dict(bind),
-                "keys": {d: key_vars[d].get().strip().lower() for d in DIRS}})
+                "pad_target": key_of(TARGETS, tgt_var.get()), "enabled": on_var.get(),
+                "bind": {d: bind[d] for d in DIRS}, "keys": {d: key_vars[d].get().strip().lower() for d in DIRS},
+                "pairs": [{"a": bind[r["id"], "a"], "b": bind[r["id"], "b"], "mode": key_of(PAIR_MODES, r["mode"].get()),
+                           "key_a": r["key_a"].get().strip().lower(), "key_b": r["key_b"].get().strip().lower()}
+                          for r in pair_rows]})
+        if not ok:
+            theme_var.set(was)
+        elif eng.cfg["theme"] != was:  # close this window; main() reopens it in the new colours, same place
+            apply_theme(eng.cfg["theme"])
+            icon.icon = tray_image()
+            rebuild_at[0] = f"+{root.winfo_x()}+{root.winfo_y()}"
+            root.after_cancel(poll_id[0])
+            root.destroy()
 
     ttk.Button(foot, text="Save and apply", style="Accent.TButton", command=save).grid(row=0, column=1, sticky="e")
     root.bind("<Return>", lambda e: save())
@@ -686,39 +923,17 @@ def main():
     try:  # dark title bar to match (Windows 10 2004+ / 11)
         root.update_idletasks()
         ctypes.windll.dwmapi.DwmSetWindowAttribute(ctypes.windll.user32.GetParent(root.winfo_id()), 20,
-                                                   ctypes.byref(ctypes.c_int(1)), 4)
+                                                   ctypes.byref(ctypes.c_int(int(DARK))), 4)
     except (OSError, AttributeError):
         pass
 
-    ui_q = queue.SimpleQueue()  # tray callbacks run on another thread; tkinter must not be touched from there
-    img = Image.new("RGB", (64, 64), BG)
-    draw = ImageDraw.Draw(img)
-    for dx, dy in VEC.values():
-        draw.polygon(arrow_points(32 + dx * 17, 32 + dy * 17, dx, dy, 26), fill=ACCENT)
-    root.iconphoto(True, tk.PhotoImage(data=_png(img)))
-
-    def mode_item(k):
-        return pystray.MenuItem(MODES[k], lambda: ui_q.put(("mode", k)),
-                                checked=lambda item: eng.cfg["mode"] == k, radio=True)
-
-    icon = pystray.Icon("socd", img, "SOCD Cleaner", menu=pystray.Menu(
-        pystray.MenuItem("Settings", lambda: ui_q.put(("show", None)), default=True),
-        pystray.MenuItem("Cleaning enabled", lambda: ui_q.put(("toggle", None)),
-                         checked=lambda item: eng.cfg["enabled"]),
-        pystray.MenuItem("SOCD mode", pystray.Menu(*[mode_item(k) for k in MODES])),
-        pystray.MenuItem("Start with Windows", lambda: ui_q.put(("autostart", None)),
-                         checked=lambda item: autostart()),
-        pystray.MenuItem("Quit", lambda: ui_q.put(("quit", None)))))
-    icon.run_detached()
-    shown_status = [None]
+    root.iconphoto(True, tk.PhotoImage(data=_png(tray_image())))
+    shown_status, poll_id = [None], [None]
 
     def poll():
         while not ui_q.empty():
             what, arg = ui_q.get()
             if what == "quit":
-                icon.stop()
-                eng.running = False
-                eng.join(1)
                 root.destroy()
                 return
             if what == "show":
@@ -737,8 +952,8 @@ def main():
                 icon.update_menu()
         d = capturing[0]
         if d and eng.pressed is not None:
-            # binding a button another direction already uses swaps the two, instead of failing on save
-            other = next((o for o in DIRS if o != d and bind[o] == eng.pressed), None)
+            # binding a button something else already uses swaps the two, instead of failing on save
+            other = next((o for o in bind if o != d and bind[o] == eng.pressed), None)
             if other:
                 bind[other] = bind[d]
                 label_bind(other)
@@ -747,7 +962,7 @@ def main():
             capturing[0] = None
         if eng.kind != kind[0]:  # a different controller family connected: relabel with its icons
             kind[0] = eng.kind
-            for o in DIRS:
+            for o in bind:
                 if o != capturing[0]:
                     label_bind(o)
 
@@ -764,7 +979,7 @@ def main():
                         else ("RUNNING", GOOD) if s.startswith("Running")
                         else ("WAITING", AMBER) if s.startswith(("Waiting", "Starting", "Controller disconnected"))
                         else ("PROBLEM", BAD))
-        state.configure(text=word, foreground=colour)
+        state.configure(text=word)  # the dot carries the colour; the word stays full-contrast
         dot.itemconfigure(dot_item, fill=colour)
         status.configure(text=s + (f"  \u00b7  {LAYOUTS[kind[0]][0]} button layout" if s.startswith("Running") else ""))
         if s != shown_status[0]:  # tooltip + toast on connect / disconnect / errors
@@ -775,12 +990,13 @@ def main():
                     icon.notify(s[:200], "SOCD Cleaner")
             except Exception:
                 pass  # tray icon not ready yet; next status change will retry
-        root.after(50, poll)
+        poll_id[0] = root.after(50, poll)
 
-    if not first_run:
+    if not show:
         root.withdraw()
     poll()
     root.mainloop()
+    return rebuild_at[0]
 
 
 def _png(img):
