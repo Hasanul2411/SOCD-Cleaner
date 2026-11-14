@@ -1,0 +1,19 @@
+name: build
+on: [push, workflow_dispatch]
+jobs:
+  exe:
+    runs-on: windows-latest
+    env:
+      VGAMEPAD_SKIP_VIGEMBUS_INSTALL: "true"  # don't launch the driver installer on CI
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pyinstaller
+      - run: python test_socd.py
+      - run: pyinstaller --onefile --noconsole --name socd --collect-all vgamepad --hidden-import pygame._sdl2.controller socd.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: socd
+          path: dist/socd.exe
