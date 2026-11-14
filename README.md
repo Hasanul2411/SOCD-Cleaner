@@ -29,32 +29,30 @@ pick, and passes the cleaned result to the game as a virtual Xbox 360 pad or as 
 | Windows 10 or 11, 64-bit | everything | — |
 | A controller Windows can see (XInput, DirectInput, PlayStation, Switch, generic HID) | everything | — |
 | `socd.exe` | everything | [release/socd.exe](release/socd.exe) |
-| ViGEmBus driver *(admin rights to install)* | **Virtual Xbox pad** output | [ViGEmBus releases](https://github.com/nefarius/ViGEmBus/releases) |
-| HidHide driver *(admin rights to install)* | **Virtual Xbox pad** output, to hide the real controller | [HidHide releases](https://github.com/nefarius/HidHide/releases) |
+| ViGEmBus driver | **Virtual Xbox pad** output | bundled in the exe — or [ViGEmBus releases](https://github.com/nefarius/ViGEmBus/releases) |
+| HidHide driver | hiding the real controller from games | bundled in the exe — or [HidHide releases](https://github.com/nefarius/HidHide/releases) |
+| Administrator rights, once | installing the two drivers | — |
 | Nothing extra | **Keyboard keys** output | — |
 
-Optional: [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB) if an unusual
-controller is not recognised (see [Troubleshooting](#8-troubleshooting)).
+Both drivers are kernel drivers by Nefarius; Windows only lets an administrator install those, so
+that one prompt cannot be avoided. Everything after it is automatic.
 
 ## 2. Install
 
 1. Download [`release/socd.exe`](release/socd.exe) and put it in a folder you can write to, for
    example `Documents\SOCD` (not `Program Files`). Settings are saved next to it.
-2. If you want **keyboard output only**, you are done — skip to [First-time setup](#3-first-time-setup).
-3. For **virtual pad output**, install ViGEmBus: download `ViGEmBus_x.xx.xxx_x64_x86_arm64.exe`
-   from [ViGEmBus releases](https://github.com/nefarius/ViGEmBus/releases), run it, and accept the
-   administrator prompt.
-4. Install HidHide: download `HidHide_x.x.xxx_x64.exe` from
-   [HidHide releases](https://github.com/nefarius/HidHide/releases), run it, and restart the PC
-   when asked.
-5. Open **HidHide Configuration Client** from the Start menu and:
-   1. On the **Applications** tab, click **+** and add `socd.exe`. This lets SOCD Cleaner keep
-      seeing the real controller.
-   2. On the **Devices** tab, tick your controller.
-   3. Tick **Enable device hiding**.
+2. Start `socd.exe`. If a driver is missing, the **Device** box shows an
+   **Install missing drivers** button. Click it, confirm, and accept the Windows administrator
+   prompt for each driver. (Keyboard-only users can skip this.)
+3. Restart Windows once if HidHide was just installed.
 
-   Without this step the game sees both the real controller and the virtual one, so every input
-   arrives twice and cleaning appears not to work.
+That is all. You do **not** need to open HidHide's configuration tool, tick devices, or unplug the
+controller: while it runs, SOCD Cleaner adds itself to HidHide's allowed programs, hides every
+device entry of the real controller, and switches hiding on. When it quits it un-hides the
+controller again, so the stick works normally without it.
+
+**Start SOCD Cleaner before the game.** A game that was already running keeps the connection to
+the real controller it opened earlier; restart the game if you see doubled inputs.
 
 Windows SmartScreen or antivirus may warn about `socd.exe` because it is unsigned and sends input
 to other programs. If you would rather not trust a prebuilt file, [run it from source](#10-run-or-build-from-source).
@@ -65,7 +63,7 @@ to other programs. If you would rather not trust a prebuilt file, [run it from s
    it starts in the system tray (double-click the tray icon to open it).
 2. Check the top-right status: **RUNNING** means a controller was found. **WAITING** means none is
    connected. **PROBLEM** shows the reason in the line at the bottom.
-3. **Controller**: leave "(first one found)" or pick yours.
+3. **Controller**: leave "(first one found)", pick yours, or choose "(all controllers)" for several players.
 4. **Output**: *Virtual Xbox pad* (needs the drivers above) or *Keyboard keys*.
 5. **SOCD mode**: pick the rule (table below).
 6. **Directions**: click the button next to Up, press the controller button you want for Up, and
@@ -89,7 +87,11 @@ to other programs. If you would rather not trust a prebuilt file, [run it from s
 
 ### Device
 
-- **Controller** — "(first one found)" or a specific one. SOCD's own virtual pad is left out of the list.
+- **Controller** — "(first one found)", a specific one, or "(all controllers)": up to four controllers at once,
+  each with its own cleaned virtual pad, all using the same bindings, mode and pairs. With keyboard
+  output they all drive the same keys. SOCD's own virtual pads are left out of the list.
+- **Hide the real controller from games** — on by default with pad output; see [Install](#2-install).
+  The status line says whether hiding worked.
 - **Output** — *Virtual Xbox pad*: the game sees a normal Xbox 360 controller; every button, stick
   and trigger you have not bound passes straight through, and rumble is forwarded back to the real
   controller. *Keyboard keys*: cleaned directions are sent as key presses; nothing else is sent.
@@ -156,9 +158,11 @@ original colour palettes named after who inspired them; no game artwork is used.
 
 | Problem | Fix |
 |---|---|
-| "No virtual pad (is ViGEmBus installed?)" | Install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases), then click **Save and apply** or restart SOCD Cleaner. Or switch **Output** to *Keyboard keys*. |
-| Inputs arrive twice / cleaning has no effect in game | The game still sees the real controller. Redo the [HidHide step](#2-install) and make sure **Enable device hiding** is ticked. |
-| Status stays **WAITING** | Check the controller in Windows *Set up USB game controllers* (`joy.cpl`). If HidHide is hiding it, `socd.exe` must be on HidHide's **Applications** list. |
+| "No virtual pad (is ViGEmBus installed?)" | Click **Install missing drivers** in the Device box, or install [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) yourself, then **Save and apply**. Or switch **Output** to *Keyboard keys*. |
+| Inputs arrive twice / cleaning has no effect in game | The game still sees the real controller. Check the status line: it must end with "real controller hidden from games". If it does, the game was started before SOCD Cleaner — restart the game. If it says HidHide is not installed, click **Install missing drivers** and restart Windows. |
+| Status says "could not identify the real controller" | Windows did not report the controller's USB ids. Hide it once by hand in HidHide Configuration Client (tick every entry of the controller), or switch the controller to another mode (for example PS4 instead of PC). |
+| The real controller stays dead after a crash | Start SOCD Cleaner and quit it from the tray; that un-hides it. Or untick it in HidHide Configuration Client. |
+| Status stays **WAITING** | Check the controller in Windows *Set up USB game controllers* (`joy.cpl`). |
 | Controller connected but not listed | Download `gamecontrollerdb.txt` from [SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB), put it next to `socd.exe`, restart. |
 | Keyboard output ignored by the game | Games running as administrator ignore input from normal programs: run `socd.exe` as administrator too. |
 | Button names look wrong (PlayStation pad shows A/B/X/Y) | The pad is reporting as Xbox (Steam Input, DS4Windows). Bindings still work; only the labels differ. |
@@ -168,7 +172,9 @@ original colour palettes named after who inspired them; no game artwork is used.
 ## 9. Limits
 
 - Stick directions cannot be bound, only buttons and triggers.
-- Two identical controllers cannot be told apart (matched by name).
+- Two identical controllers cannot be told apart by name; use "(all controllers)" to clean both.
+- All controllers share one set of bindings, mode and pairs.
+- A real Xbox 360 pad plugged in during the few seconds after SOCD Cleaner starts may be ignored; replug it.
 - Many games and tournaments restrict SOCD modes (for example last-input-priority) or input
   remappers in general; check the rules before using it competitively.
 
@@ -197,7 +203,7 @@ Build the exe (this is what [the build workflow](https://github.com/Hasanul2411/
 
 ```
 pip install pyinstaller
-pyinstaller --onefile --noconsole --name socd --collect-data vgamepad --collect-binaries vgamepad --hidden-import vgamepad --hidden-import vgamepad.win.virtual_gamepad --hidden-import vgamepad.win.vigem_client --hidden-import pygame._sdl2.controller socd.py
+pyinstaller --onefile --noconsole --name socd --add-data "drivers;drivers" --collect-data vgamepad --collect-binaries vgamepad --hidden-import vgamepad --hidden-import vgamepad.win.virtual_gamepad --hidden-import vgamepad.win.vigem_client --hidden-import pygame._sdl2.controller socd.py
 ```
 
 Libraries used: [pygame](https://www.pygame.org/) (SDL controller input),
@@ -212,4 +218,8 @@ as well as colour. All icons are drawn by the program itself.
 
 ## Licence
 
-[MIT](LICENSE)
+[MIT](LICENSE). The bundled driver installers are unmodified official builds and keep their own
+licences: [HidHide](drivers/HidHide-LICENSE.txt) (MIT, `drivers/HidHide_1.5.230_x64.exe`, SHA-256
+`f4bbbcb82e6258641b887c74bc81c4c5f66e4aa811808dfc304347687b7605f6`, from the
+[v1.5.230.0 release](https://github.com/nefarius/HidHide/releases/tag/v1.5.230.0)) and
+[ViGEmBus](drivers/ViGEmBus-LICENSE.txt) (BSD-3-Clause, the installer shipped inside the `vgamepad` package).

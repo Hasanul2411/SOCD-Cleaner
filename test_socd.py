@@ -1,5 +1,5 @@
 """Run: python test_socd.py"""
-from socd import Pair, THEMES, palette, contrast, controller_kind, button_icon, LAYOUTS, clean, scancode, INPUT, check_cfg, DEFAULTS, BUTTONS, autostart
+from socd import is_virtual, missing_drivers, driver_installer, DRIVERS, Slot, ALL, Hider, guid_vid_pid, is_device, device_instances, nt_path, multi_sz, from_multi_sz, hidhide_code, Pair, THEMES, palette, contrast, controller_kind, button_icon, LAYOUTS, clean, scancode, INPUT, check_cfg, DEFAULTS, BUTTONS, autostart
 import ctypes
 
 # single direction or nothing: every mode agrees
@@ -62,7 +62,7 @@ for wrong in ([{**pair, "b": 0}], [{**pair, "a": 11}], [{**pair, "mode": "up"}],
 
 # config validation: defaults pass, anything that would crash the engine is rejected
 check_cfg(DEFAULTS)
-bad = [{"mode": "nope"}, {"theme": "nope"}, {"output": 3}, {"enabled": "yes"}, {"controller": None},
+bad = [{"mode": "nope"}, {"hide": 1}, {"theme": "nope"}, {"output": 3}, {"enabled": "yes"}, {"controller": None},
        {"bind": {"up": 99, "down": 12, "left": 13, "right": 14}},     # out of range
        {"bind": {"up": "A", "down": 12, "left": 13, "right": 14}},    # wrong type
        {"bind": {"up": 12, "down": 12, "left": 13, "right": 14}},     # duplicate button
@@ -96,4 +96,72 @@ for name in THEMES:
         assert got >= need, f"{name}: {token} on background is {got:.2f}, need {need}"
     assert contrast(p["FG"], p["FIELD"]) >= 4.5, name
     assert contrast(p["ON_ACCENT"], p["ACCENT"]) >= 4.5, f"{name}: text on accent button"
+
+# hiding the real controller through HidHide
+assert guid_vid_pid("030000004c050000c405000000000000") == (0x054C, 0x05C4)
+assert guid_vid_pid("0300a5390d0f00008401000000007200") == (0x0F0D, 0x0184)   # with CRC bytes
+assert guid_vid_pid("78696e70757401000000000000000000") == (0, 0)             # xinput: no ids
+assert is_device(r"USB\VID_0F0D&PID_0184\5&2A3B", 0x0F0D, 0x0184)
+assert is_device(r"HID\vid_0f0d&pid_0184&IG_00\6&1&0&0000", 0x0F0D, 0x0184)
+assert is_device(r"HID\{00001124-0000-1000-8000-00805F9B34FB}_VID&0002054C_PID&09CC\8&1", 0x054C, 0x09CC)
+assert not is_device(r"USB\VID_045E&PID_028E\01", 0x0F0D, 0x0184)
+assert not is_device(r"USB\VID_0F0D&PID_0185\1", 0x0F0D, 0x0184)
+assert from_multi_sz(multi_sz(["a", "b c"])) == ["a", "b c"] and multi_sz(["a"]) == "a\0\0".encode("utf-16-le")
+assert from_multi_sz(multi_sz([])) == [] and len(multi_sz([])) == 4
+assert hidhide_code(2048) == 0x80016000 and hidhide_code(2056) == 0x80016020
+import sys as _sys
+assert nt_path(_sys.executable).startswith("\\Device\\") and nt_path(_sys.executable).lower().endswith("python.exe")
+import re as _re
+# real enumeration: every USB device found by a broad scan must be found again by its own ids
+import ctypes as _c
+n = _c.c_ulong(); _c.windll.cfgmgr32.CM_Get_Device_ID_List_SizeW(_c.byref(n), None, 0x100)
+buf = _c.create_unicode_buffer(n.value); _c.windll.cfgmgr32.CM_Get_Device_ID_ListW(None, buf, n.value, 0x100)
+usb = [i for i in buf[:n.value].split("\0") if _re.match(r"USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}", i)]
+if usb:
+    v, p = int(usb[0][8:12], 16), int(usb[0][17:21], 16)
+    assert usb[0] in device_instances(v, p), "present USB device not found by its own vid/pid"
+assert device_instances(0xFFFE, 0xFFFD) == []
+# our own virtual pads hang off a root-enumerated bus and must never be hidden
+if usb:
+    assert not is_virtual(usb[0]), "a real USB device was taken for a virtual one"
+def _parent(i):
+    node, b = _c.c_ulong(), _c.create_unicode_buffer(256)
+    cm = _c.windll.cfgmgr32
+    if cm.CM_Locate_DevNodeW(_c.byref(node), i, 0) or cm.CM_Get_Parent(_c.byref(node), node, 0) or cm.CM_Get_Device_IDW(node, b, 256, 0):
+        return ""
+    return b.value.upper()
+rooted = [i for i in buf[:n.value].split("\0") if i and _parent(i).startswith("ROOT\\")]
+assert rooted and is_virtual(rooted[0]), "child of a root-enumerated device not recognised"
+assert not is_virtual("USB\\NOPE\\0")
+
+# driver bundle: both installers are present in a source checkout, and detection never raises
+assert set(missing_drivers()) <= set(DRIVERS)
+assert all(driver_installer(d) for d in DRIVERS), "a bundled driver installer is missing"
+
+# a Slot cleans one controller: fake pad state in, cleaned directions and pair results out
+class _Ctl:
+    def __init__(self): self.down, self.axes = set(), [0] * 6
+    def get_button(self, b): return b in self.down
+    def get_axis(self, a): return self.axes[a]
+class _Eng: pressed = None
+cfg2 = {**DEFAULTS, "pairs": [{"a": 0, "b": 1, "mode": "last", "key_a": "", "key_b": ""}]}
+c1, c2 = _Ctl(), _Ctl()
+s1, s2, e = Slot(c1, "one"), Slot(c2, "two"), _Eng()
+s1.read(cfg2, e); s2.read(cfg2, e)
+c1.down = {13}; assert s1.read(cfg2, e)[:2] == (-1, 0) and e.pressed == 13
+c1.down = {13, 14}; assert s1.read(cfg2, e)[:2] == (1, 0) and s1.raw == ("left", "right")
+assert s2.read(cfg2, e)[:2] == (0, 0), "controllers must not share state"
+c2.down = {0}; s2.read(cfg2, e)
+c2.down = {0, 1}; assert s2.read(cfg2, e)[2] == [1] and s1.read(cfg2, e)[2] == [0]
+c1.axes[4] = 32767; s1.read(cfg2, e); assert e.pressed == 21   # LT counts as a button
+assert s1.read({**cfg2, "enabled": False}, e)[:2] == (0, 0)
+check_cfg({**DEFAULTS, "controller": ALL})
+
+h = Hider()
+try:
+    h.allow_self()
+    print("note: HidHide is installed on this machine")
+except OSError:
+    pass  # not installed here: must fail cleanly, and unhide must still be safe
+h.unhide()
 print("ok")
