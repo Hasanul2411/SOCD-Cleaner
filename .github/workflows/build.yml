@@ -12,7 +12,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt pyinstaller
       - run: python test_socd.py
-      - run: pyinstaller --onefile --noconsole --name socd --add-data "drivers;drivers" --collect-data vgamepad --collect-binaries vgamepad --hidden-import vgamepad --hidden-import vgamepad.win.virtual_gamepad --hidden-import vgamepad.win.vigem_client --hidden-import pygame._sdl2.controller socd.py
+      - run: pyinstaller --onefile --noconsole --name socd --icon icon.ico --add-data "drivers;drivers" --collect-data vgamepad --collect-binaries vgamepad --hidden-import vgamepad --hidden-import vgamepad.win.virtual_gamepad --hidden-import vgamepad.win.vigem_client --hidden-import pygame._sdl2.controller socd.py
       - uses: actions/upload-artifact@v4
         with:
           name: socd

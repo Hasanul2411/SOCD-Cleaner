@@ -203,7 +203,7 @@ Build the exe (this is what [the build workflow](https://github.com/Hasanul2411/
 
 ```
 pip install pyinstaller
-pyinstaller --onefile --noconsole --name socd --add-data "drivers;drivers" --collect-data vgamepad --collect-binaries vgamepad --hidden-import vgamepad --hidden-import vgamepad.win.virtual_gamepad --hidden-import vgamepad.win.vigem_client --hidden-import pygame._sdl2.controller socd.py
+pyinstaller --onefile --noconsole --name socd --icon icon.ico --add-data "drivers;drivers" --collect-data vgamepad --collect-binaries vgamepad --hidden-import vgamepad --hidden-import vgamepad.win.virtual_gamepad --hidden-import vgamepad.win.vigem_client --hidden-import pygame._sdl2.controller socd.py
 ```
 
 Libraries used: [pygame](https://www.pygame.org/) (SDL controller input),

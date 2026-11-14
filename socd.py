@@ -845,12 +845,12 @@ def main():
     eng.join(1)
 
 
-def tray_image():
+def tray_image(n=64):
     from PIL import Image, ImageDraw
-    img = Image.new("RGB", (64, 64), BG)
+    img = Image.new("RGB", (n, n), BG)
     draw = ImageDraw.Draw(img)
     for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
-        draw.polygon(arrow_points(32 + dx * 17, 32 + dy * 17, dx, dy, 26), fill=ACCENT)
+        draw.polygon(arrow_points(n / 2 + dx * n * 0.27, n / 2 + dy * n * 0.27, dx, dy, n * 0.4), fill=ACCENT)
     return img
 
 
